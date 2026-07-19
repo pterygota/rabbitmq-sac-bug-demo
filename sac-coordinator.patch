@@ -1,0 +1,45 @@
+Fix stream SAC coordinator not re-notifying a deactivating consumer that is
+re-selected as active.
+
+When a consumer's stepping-down consumer_update response triggers the
+coordinator's command_activate_consumer handler, the previously-active
+consumer (still in {CONNECTED, DEACTIVATING}) is treated as the "current
+active" (ActCsr) because is_active({_, DEACTIVATING}) -> true. The handler
+then sets all connected consumers to {CONNECTED, WAITING} and calls
+evaluate_active_consumer/1, which picks a new active by
+PartitionIndex rem length(Consumers). When that pick happens to be the same
+consumer that just stepped down (?SAME_CSR(Csr, ActCsr) = true), the
+existing "same active consumer as before, no need to notify it" branch
+suppresses the sac notification -- leaving the coordinator believing the
+consumer is active while its client has already been told active=false.
+The group is silently stranded and never delivers.
+
+The condition is deterministic given the topology: with N partitions and
+K consumers joining simultaneously, partitions whose PartitionIndex mod K
+selects the first consumer -- and which subscribe after another consumer
+has already caused a rebalance -- are stranded.
+
+Only skip the sac notification when the previous active was truly
+{CONNECTED, ACTIVE}. If it was DEACTIVATING, its client has just been
+notified to step down and must be re-notified when it is re-selected.
+
+--- a/deps/rabbit/src/rabbit_stream_sac_coordinator.erl
++++ b/deps/rabbit/src/rabbit_stream_sac_coordinator.erl
+@@ -386,12 +386,16 @@
+                         %% do we need effects or not?
+                         Effects =
+                             case Csr of
+-                                Csr when ?SAME_CSR(Csr, ActCsr) ->
++                                Csr when ?SAME_CSR(Csr, ActCsr) andalso
++                                         ActCsr#consumer.status =:= ?CONN_ACT ->
+                                     %% it is the same active consumer as before
+                                     %% no need to notify it
+                                     [];
+                                 _ ->
+                                     %% new active consumer, need to notify it
++                                    %% (also fires when the previous "active" was
++                                    %% deactivating -- its client has been told to
++                                    %% step down and must be re-notified)
+                                     [notify_csr_effect(Csr, S, Name, true)]
+                             end,
+                         {G2, Effects}
