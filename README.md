@@ -24,7 +24,7 @@ healthy group.
 `rabbitmq-streams activate_stream_consumer` does not unstick 
 them (re-enters the same buggy coordinator path), and restarting consumer
 apps usually does not help and is likely to trigger the bug again. 
-The only reliable manual recovery is to force-close every connection on 
+The only reliable manual recovery is to force-close connections on 
 the affected partition.
 
 The bug is easily reachable from what I think is a realistic production 
